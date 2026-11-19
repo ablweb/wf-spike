@@ -1,0 +1,43 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  a:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/python:3.12
+    steps:
+      - name: checkout
+        run: |
+          if [ -z "$(ls -A)" ]; then
+            git init -q .
+            git -c "http.extraHeader=Authorization: basic $(printf 'x-access-token:%s' "${{ github.token }}" | base64 -w0)" fetch -q --depth 1 "${{ github.server_url }}/${{ github.repository }}.git" "${{ github.ref }}"
+            git checkout -q FETCH_HEAD
+          fi
+      - run: test ! -e fail-a
+  b:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/python:3.12
+    steps:
+      - name: checkout
+        run: |
+          if [ -z "$(ls -A)" ]; then
+            git init -q .
+            git -c "http.extraHeader=Authorization: basic $(printf 'x-access-token:%s' "${{ github.token }}" | base64 -w0)" fetch -q --depth 1 "${{ github.server_url }}/${{ github.repository }}.git" "${{ github.ref }}"
+            git checkout -q FETCH_HEAD
+          fi
+      - run: test ! -e fail-b
+  ci:
+    needs: [a, b]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.a.result }}" = success && test "${{ needs.b.result }}" = success

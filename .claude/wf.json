@@ -46,7 +46,7 @@
   },
   "policy": {
     "follow": "always",
-    "review": "exception"
+    "review": "both"
   },
   "agents": {
     "classes": [
@@ -55,7 +55,10 @@
     ],
     "roles": {
       "developer": "implement",
-      "reviewer": "review",
+      "reviewer": {
+        "stage": "review",
+        "start": "operator"
+      },
       "tester": {
         "stage": "implement",
         "classes": [

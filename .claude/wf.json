@@ -8,7 +8,7 @@
   "tasks": "ablweb/wf-spike-tasks",
   "ci": {
     "image": "docker.io/library/python:3.12",
-    "full": "test ! -e fail-a",
+    "full": "test ! -e docs/red.flag",
     "fast": "true",
     "model": "python3 .claude/hooks/model.py"
   },

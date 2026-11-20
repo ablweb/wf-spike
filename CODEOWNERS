@@ -1,3 +1,13 @@
-/.claude/ @ablweb
-/.github/ @ablweb
+# Generated from the risk classes of .claude/wf.json (wf/apply.sh). Do not edit by hand.
+# GitHub flavour: paths from the root, owners are logins.
+
+# class C: CI, agent settings, ownership; human approval
+/.forgejo/** @ablweb
+/.github/** @ablweb
+/.claude/** @ablweb
+/CLAUDE.md @ablweb
 /CODEOWNERS @ablweb
+/Makefile @ablweb
+/scripts/** @ablweb
+/.gitignore @ablweb
+

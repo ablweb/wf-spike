@@ -24,4 +24,4 @@ jobs:
             git -c "http.extraHeader=Authorization: basic $(printf 'x-access-token:%s' "${{ github.token }}" | base64 -w0)" fetch -q --depth 1 "${{ github.server_url }}/${{ github.repository }}.git" "${{ github.ref }}"
             git checkout -q FETCH_HEAD
           fi
-      - run: test ! -e fail-a
+      - run: test ! -e docs/red.flag

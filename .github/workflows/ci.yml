@@ -6,13 +6,16 @@ on:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
-  a:
+  ci:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     container:
       image: docker.io/library/python:3.12
     steps:
+      # checkout from GitHub itself, with the job's token: no action to download, so no node in the image (git must be in it). The workspace
+      # belongs to another user than the container's, so git is told to trust it. (a workspace that already holds the files is used as it is)
       - name: checkout
         run: |
           git config --global --add safe.directory "$PWD"
@@ -22,24 +25,3 @@ jobs:
             git checkout -q FETCH_HEAD
           fi
       - run: test ! -e fail-a
-  b:
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    container:
-      image: docker.io/library/python:3.12
-    steps:
-      - name: checkout
-        run: |
-          git config --global --add safe.directory "$PWD"
-          if [ -z "$(ls -A)" ]; then
-            git init -q .
-            git -c "http.extraHeader=Authorization: basic $(printf 'x-access-token:%s' "${{ github.token }}" | base64 -w0)" fetch -q --depth 1 "${{ github.server_url }}/${{ github.repository }}.git" "${{ github.ref }}"
-            git checkout -q FETCH_HEAD
-          fi
-      - run: test ! -e fail-b
-  ci:
-    needs: [a, b]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      - run: test "${{ needs.a.result }}" = success && test "${{ needs.b.result }}" = success

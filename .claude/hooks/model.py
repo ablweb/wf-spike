@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""The architecture model of a project's code, as a Structurizr DSL workspace. The pipeline hook runs it (ci.model of .claude/wf.json) in
+the developer's worktree when a task changed class B files, and commits the result with the change.
+
+usage: model.py [--out FILE]      default docs/architecture.generated.dsl, in the current directory (the project)
+
+The code is the files of class B (risk.B.paths of .claude/wf.json) in a language that has a reader (.claude/hooks/readers/<pack>.py, put
+there by mount.sh from the language packs), tests left out. One software system (the project), one container per top-level folder of a
+class B path, one component per file, described by the first line of the comment the reader finds. Relationships (imports between
+project files) are what a reader gives; a reader without them leaves the model with the structure only. The model knows no language
+itself: with no reader it writes nothing. The output is deterministic (the same files give the same bytes) and holds no count or date,
+so that two tasks that change different files do not conflict on its first line.
+
+A reader is a module with LANG (file extension -> language name), TEST (a regex of the test files, left out), SKIP (folder names not to
+enter), describe(rel, text) (the comment that describes a file) and edges(files, texts, prefixes) ({(from, to)} imports among its files).
+"""
+import importlib.util
+import json
+import os
+import pathlib
+import posixpath
+import re
+import sys
+
+sys.dont_write_bytecode = True   # the jailed run's worktree must hold nothing but what the model writes
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import paths  # noqa: E402  (the glob rules of the risk classes)
+
+OUT = "docs/architecture.generated.dsl"
+
+
+def readers():
+    """The language readers of the project, by file name."""
+    found = []
+    for f in sorted((HERE / "readers").glob("*.py")):
+        spec = importlib.util.spec_from_file_location("reader_" + f.stem, f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        found.append(mod)
+    return found
+
+
+def prefix_of(glob):
+    """The literal folder a glob starts with: src/** -> src."""
+    parts = []
+    for seg in glob.split("/"):
+        if "*" in seg or "?" in seg:
+            break
+        parts.append(seg)
+    return "/".join(parts)
+
+
+def sources(root, globs, by_ext):
+    """The code files, as sorted project-relative paths."""
+    rx = [re.compile(paths.glob_to_regex(g)) for g in globs]
+    skip = {s for r in by_ext.values() for s in r.SKIP}
+    found = []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if not x.startswith(".") and x not in skip]
+        for f in files:
+            rel = posixpath.relpath(os.path.join(d, f), root).replace(os.sep, "/")
+            r = by_ext.get(os.path.splitext(f)[1])
+            if r and not r.TEST.search(rel) and any(x.match(rel) for x in rx):
+                found.append(rel)
+    return sorted(found)
+
+
+def first_line(text):
+    return next((ln.strip(" \t*/#!") for ln in text.splitlines() if ln.strip(" \t*/#!")), "")
+
+
+def q(s):
+    return '"' + re.sub(r"\s+", " ", s.replace('"', "'").replace("\\", "/")).strip()[:120] + '"'
+
+
+def main(argv):
+    out = argv[argv.index("--out") + 1] if "--out" in argv else OUT
+    cfg = json.loads((HERE.parent / "wf.json").read_text())
+    rs = readers()
+    by_ext = {e: r for r in reversed(rs) for e in r.LANG}   # the first reader that names an extension has it
+    globs = cfg["risk"]["B"]["paths"]
+    prefixes = sorted({prefix_of(g) for g in globs} - {""})
+    files = sources(".", globs, by_ext)
+    if not files:
+        return
+    reader_of = {f: by_ext[os.path.splitext(f)[1]] for f in files}
+    lang_of = {f: reader_of[f].LANG[os.path.splitext(f)[1]] for f in files}
+    texts = {f: pathlib.Path(f).read_text(errors="replace") for f in files}
+    edges = set()
+    for r in rs:
+        mine = [f for f in files if reader_of[f] is r]
+        if mine:
+            edges |= r.edges(mine, texts, prefixes)
+    edges = sorted(edges)
+
+    used = {"sys"}
+
+    def ident(prefix, name):
+        base = prefix + re.sub(r"[^A-Za-z0-9]", "_", name)
+        n, cand = 1, base
+        while cand in used:
+            n, cand = n + 1, f"{base}_{n}"
+        used.add(cand)
+        return cand
+
+    tree_of, comp = {}, {}   # container name -> [file]; file -> (identifier, name)
+    for f in files:
+        p = max((x for x in prefixes if f.startswith(x + "/")), key=len, default="")
+        rest = f[len(p) + 1 if p else 0:]
+        c, _, inner = rest.partition("/")
+        if not inner:
+            c, inner = (p.rpartition("/")[2] or "root"), rest
+        tree_of.setdefault(c, []).append(f)
+        comp[f] = (ident("m_", f), inner)
+    kid = {c: ident("k_", c) for c in sorted(tree_of)}
+    app = cfg.get("app", "project").rpartition("/")[2]
+
+    lines = ["/* Generated by .claude/hooks/model.py. Do not edit: the pipeline rewrites it when a task changes the code. */",
+             f"workspace {q(app + ' (code)')} {q('The structure of the code, one component per file.')} {{",
+             "    !impliedRelationships true", "    model {", f"        sys = softwareSystem {q(app)} {q('The project.')} {{"]
+    for c in sorted(tree_of):
+        langs = sorted({lang_of[f] for f in tree_of[c]})
+        lines.append(f"            {kid[c]} = container {q(c)} \"\" {q('/'.join(langs))} {{")
+        for f in tree_of[c]:
+            i, name = comp[f]
+            lines.append(f"                {i} = component {q(name)} {q(first_line(reader_of[f].describe(f, texts[f])))} {q(lang_of[f])}")
+        lines.append("            }")
+    lines += ["        }"] + [f"        {comp[a][0]} -> {comp[b][0]} \"imports\"" for a, b in edges]
+    lines += ["    }", "    views {", "        container sys \"Containers\" {", "            include *", "            autolayout lr", "        }"]
+    for c in sorted(tree_of):
+        lines += [f"        component {kid[c]} \"Components_{kid[c]}\" {{", "            include *", "            autolayout lr", "        }"]
+    lines += ["    }", "}"]
+    new = "\n".join(lines) + "\n"
+    dest = pathlib.Path(out)
+    if not dest.exists() or dest.read_text() != new:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(new)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

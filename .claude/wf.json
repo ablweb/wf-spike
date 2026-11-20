@@ -1,0 +1,67 @@
+{
+  "forge": {
+    "host": "github",
+    "base": "https://github.com",
+    "email_domain": "wf.invalid"
+  },
+  "app": "ablweb/wf-spike",
+  "tasks": "ablweb/wf-spike-tasks",
+  "ci": {
+    "image": "docker.io/library/python:3.12",
+    "full": "test ! -e fail-a",
+    "fast": "true",
+    "model": "python3 .claude/hooks/model.py"
+  },
+  "risk": {
+    "A": {
+      "description": "docs and tests; no review, auto-merge when CI is green",
+      "approver": null,
+      "paths": [
+        "docs/**",
+        "tests/**",
+        "*.md"
+      ]
+    },
+    "B": {
+      "description": "normal code; no standing approver, a review is requested per PR when the task is marked for it (policy below)",
+      "approver": null,
+      "paths": [
+        "src/**"
+      ]
+    },
+    "C": {
+      "description": "CI, agent settings, ownership; human approval",
+      "approver": "operator",
+      "paths": [
+        ".forgejo/**",
+        ".github/**",
+        ".claude/**",
+        "CLAUDE.md",
+        "CODEOWNERS",
+        "Makefile",
+        "scripts/**",
+        ".gitignore"
+      ]
+    }
+  },
+  "policy": {
+    "follow": "always",
+    "review": "exception"
+  },
+  "agents": {
+    "classes": [
+      "A",
+      "B"
+    ],
+    "roles": {
+      "developer": "implement",
+      "reviewer": "review",
+      "tester": {
+        "stage": "implement",
+        "classes": [
+          "A"
+        ]
+      }
+    }
+  }
+}

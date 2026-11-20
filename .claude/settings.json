@@ -1,0 +1,121 @@
+{
+  "autoMemoryEnabled": false,
+  "permissions": {
+    "deny": [
+      "Read(/.forgejo/**)",
+      "Read(/.github/**)",
+      "Read(/.claude/settings.json)",
+      "Read(/.claude/settings.local.json)",
+      "Read(/.claude/wf.json)",
+      "Read(/.claude/agents/**)",
+      "Read(/.claude/hooks/**)",
+      "Read(/.claude/skills/**)",
+      "Read(/.claude/commands/**)",
+      "Read(/.claude/rules/**)",
+      "Read(/.claude/output-styles/**)",
+      "Read(/CLAUDE.md)",
+      "Read(/CODEOWNERS)",
+      "Read(/Makefile)",
+      "Read(/scripts/**)",
+      "Read(/.gitignore)",
+      "Read(/.git/**)",
+      "Read(/.claude/worktrees/*/.forgejo/**)",
+      "Read(/.claude/worktrees/*/.github/**)",
+      "Read(/.claude/worktrees/*/.claude/**)",
+      "Read(/.claude/worktrees/*/CLAUDE.md)",
+      "Read(/.claude/worktrees/*/CODEOWNERS)",
+      "Read(/.claude/worktrees/*/Makefile)",
+      "Read(/.claude/worktrees/*/scripts/**)",
+      "Read(/.claude/worktrees/*/.gitignore)",
+      "Read(/.claude/worktrees/*/.git)",
+      "Edit(/.forgejo/**)",
+      "Edit(/.github/**)",
+      "Edit(/.claude/settings.json)",
+      "Edit(/.claude/settings.local.json)",
+      "Edit(/.claude/wf.json)",
+      "Edit(/.claude/agents/**)",
+      "Edit(/.claude/hooks/**)",
+      "Edit(/.claude/skills/**)",
+      "Edit(/.claude/commands/**)",
+      "Edit(/.claude/rules/**)",
+      "Edit(/.claude/output-styles/**)",
+      "Edit(/CLAUDE.md)",
+      "Edit(/CODEOWNERS)",
+      "Edit(/Makefile)",
+      "Edit(/scripts/**)",
+      "Edit(/.gitignore)",
+      "Edit(/.git/**)",
+      "Edit(/.claude/worktrees/*/.forgejo/**)",
+      "Edit(/.claude/worktrees/*/.github/**)",
+      "Edit(/.claude/worktrees/*/.claude/**)",
+      "Edit(/.claude/worktrees/*/CLAUDE.md)",
+      "Edit(/.claude/worktrees/*/CODEOWNERS)",
+      "Edit(/.claude/worktrees/*/Makefile)",
+      "Edit(/.claude/worktrees/*/scripts/**)",
+      "Edit(/.claude/worktrees/*/.gitignore)",
+      "Edit(/.claude/worktrees/*/.git)"
+    ],
+    "allow": [
+      "Read(/docs/**)",
+      "Read(/tests/**)",
+      "Read(/*.md)",
+      "Read(/src/**)",
+      "Read(/.claude/worktrees/*/docs/**)",
+      "Read(/.claude/worktrees/*/tests/**)",
+      "Read(/.claude/worktrees/*/*.md)",
+      "Read(/.claude/worktrees/*/src/**)",
+      "Edit(/docs/**)",
+      "Edit(/tests/**)",
+      "Edit(/*.md)",
+      "Edit(/src/**)",
+      "Edit(/.claude/worktrees/*/docs/**)",
+      "Edit(/.claude/worktrees/*/tests/**)",
+      "Edit(/.claude/worktrees/*/*.md)",
+      "Edit(/.claude/worktrees/*/src/**)",
+      "Read(/docs)",
+      "Read(/tests)",
+      "Read(/src)",
+      "Read(/.claude/worktrees/*/docs)",
+      "Read(/.claude/worktrees/*/tests)",
+      "Read(/.claude/worktrees/*/src)",
+      "Read(/.claude/wf/review/**)"
+    ]
+  },
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent-done.sh\" ] && exec \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent-done.sh\" || echo '{\"systemMessage\": \"pipeline not started: .claude/hooks/agent-done.sh is missing, run wf/mount.sh\"}'",
+            "timeout": 360
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "developer|reviewer|tester",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent-start.sh\" ] && exec \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent-start.sh\" || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$CLAUDE_PROJECT_DIR/.claude/hooks/before-agent.sh\" ] && exec \"$CLAUDE_PROJECT_DIR/.claude/hooks/before-agent.sh\" || true",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

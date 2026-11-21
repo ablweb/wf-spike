@@ -1,1 +1,1 @@
-probe g3 7285000, said
+probe g3 8018500

@@ -20,7 +20,7 @@ gh_token() { # ROLE: the token to use, minted when the kept one ends in less tha
   [ "$r" != operator ] || { cat "$GH/operator.token" 2>/dev/null || die "no operator token ($GH/operator.token)"; return; }
   if [ -f "$f" ] && read -r exp <"$f" && [ "$exp" -gt $(( $(date +%s) + 120 )) ]; then sed -n 2p "$f"; return; fi
   . "$GH/$r.app" 2>/dev/null || die "no credentials for the $r App ($GH/$r.app)"
-  resp=$(curl -4 -sS --connect-timeout 8 --max-time 30 -X POST -K <(printf 'header = "Authorization: Bearer %s"\n' "$(jwt "$APP_ID" "$GH/$r.pem")") \
+  resp=$(curl -4 -sS --connect-timeout 3 --max-time 30 -X POST -K <(printf 'header = "Authorization: Bearer %s"\n' "$(jwt "$APP_ID" "$GH/$r.pem")") \
     -H 'Accept: application/vnd.github+json' "$GH_API/app/installations/$INST_ID/access_tokens") || die "cannot reach GitHub"
   [ -n "$(jq -r '.token // empty' <<<"$resp")" ] || die "the $r App got no installation token: $(jq -r '.message // empty' <<<"$resp")"
   tmp=$(mktemp "$GH/.tok.XXXXXX") && { date -d "$(jq -r .expires_at <<<"$resp")" +%s; jq -r .token <<<"$resp"; } >"$tmp" && mv "$tmp" "$f"; jq -r .token <<<"$resp"; }
@@ -32,11 +32,11 @@ host_init() { # forge calls it once the role is known: the header of git over ht
 # (nothing was sent), so that a change is not made twice. GitHub answers 403 or 429 "rate limit" when requests come too fast: wait and ask again, up to three times.
 api_raw() {
   local user=$1 method=$2 path=$3 data=${4:-} tok a w c tc r i; tok=$(gh_token "$(gh_role "$user")") || { echo 000; return; }
-  a=(-4 -sS --connect-timeout 8 --max-time 30 -o "$BODY" -w '%{http_code} %{time_connect}' -X "$method" -H "Accept: ${GH_ACCEPT:-application/vnd.github+json}" -H 'X-GitHub-Api-Version: 2022-11-28')
+  a=(-4 -sS --connect-timeout 3 --max-time 30 -o "$BODY" -w '%{http_code} %{time_connect}' -X "$method" -H "Accept: ${GH_ACCEPT:-application/vnd.github+json}" -H 'X-GitHub-Api-Version: 2022-11-28')
   if [ "$data" = "-" ]; then a+=(-H 'Content-Type: application/json' --data-binary @-)
   elif [ -n "$data" ]; then a+=(-H 'Content-Type: application/json' -d "$data"); fi
   for r in 1 2 3 4; do
-    for i in 1 2 3 4; do
+    for i in 1 2 3 4 5 6; do   # (a connection that works takes a fraction of a second: three seconds is a failure; this machine's connections to GitHub failed about one time in five)
       w=$(curl "${a[@]}" -K <(printf 'header = "Authorization: Bearer %s"\n' "$tok") "$GH_API$path" 2>/dev/null) || true; c=${w%% *}; tc=${w##* }; [ -n "$c" ] || c=000
       [ "$c" = 000 ] || break; [ "$data" != "-" ] || break; [ "$method" = GET ] || [ "${tc:-1}" = 0.000000 ] || break; sleep 2; done
     { [ "$c" = 403 ] || [ "$c" = 429 ]; } && [ "$data" != "-" ] && [ "$r" -lt 4 ] && grep -qi 'rate limit' "$BODY" 2>/dev/null && { say "forge: GitHub rate limit ($method $path): waiting $((r * 20)) s"; sleep $((r * 20)); continue; }
@@ -101,7 +101,7 @@ ci_log() { local sha run j; num "${1:-}"; sha=$(head_of "$1") || exit 1
   # the jobs that did not pass; the job `ci` of a project with components only totals the others, so it is shown when it is the only one
   for j in $(api "$U" GET "/repos/$APP/actions/runs/$run/jobs?per_page=100" | jq -r '.jobs | (map(select(.conclusion != "success" and .conclusion != "skipped" and .status == "completed")) | (map(select(.name != "ci")) as $c | if ($c | length) > 0 then $c else . end)) | .[] | "\(.id):\(.name)"'); do
     [ "${j#*:}" = ci ] || echo "== job ${j#*:}"
-    for _ in 1 2 3; do [ "$(curl -4 -sSL --connect-timeout 8 --max-time 40 -o "$BODY" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$(gh_token "$(gh_role "$U")")") "$GH_API/repos/$APP/actions/jobs/${j%%:*}/logs" 2>/dev/null)" = 200 ] && { sed 's/^[0-9T:.Z-]* //' "$BODY" | tail -n 80; break; }; done; done; }   # (the download is tried three times: this network times out now and then)
+    for _ in 1 2 3; do [ "$(curl -4 -sSL --connect-timeout 3 --max-time 40 -o "$BODY" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$(gh_token "$(gh_role "$U")")") "$GH_API/repos/$APP/actions/jobs/${j%%:*}/logs" 2>/dev/null)" = 200 ] && { sed 's/^[0-9T:.Z-]* //' "$BODY" | tail -n 80; break; }; done; done; }   # (the download is tried three times: this network times out now and then)
 verdict() { # EVENT N SHA [-]: the reviewer's answer: the head is checked, the check moves, the comments are kept on the PR
   local ev=$1 who=$2 n=$3 sha=$4 b= cur kind; num "$n"; [[ ${sha:-} =~ ^[0-9a-f]{40}$ ]] || die "give the full head SHA that you reviewed"
   [ "${5:-}" != - ] || b=$(cat)
@@ -127,7 +127,7 @@ h_dev_update_branch() {   # prints updated or current; the update is made by Git
   local code before i; num "${1:-}"; before=$(head_of "$1") || exit 1
   code=$(api_raw "$U" PUT "/repos/$APP/pulls/$1/update-branch" '{}')
   if [ "${code:0:1}" = 2 ]; then
-    for i in $(seq 20); do [ "$(head_of "$1")" != "$before" ] && break; sleep 2; done; echo updated
+    for i in $(seq 60); do [ "$(head_of "$1")" != "$before" ] && break; sleep 2; done; echo updated
   elif grep -qi 'no new commits' "$BODY" 2>/dev/null; then echo current
   else die "update of PR #$1 answered $code: $(jq -r '.message // empty' "$BODY" 2>/dev/null | cut -c1-160)"; fi; }
 h_dev_pr_behind() {   # current | behind | behind-approved (a PR with an approval is left alone: a new head would ask for the review again)

@@ -29,8 +29,8 @@ APP=${FORGE_APP:-$(wfcfg .app)} TASKS=${FORGE_TASKS:-$(wfcfg .tasks)} WORK=${FOR
 die() { say "forge: $*"; exit 2; }
 num() { [[ ${1:-} =~ ^[0-9]+$ ]] || die "not a number: ${1:-}"; }
 gitr() { # USER GIT-ARGS: git_as for a command whose output is not used (fetch, push); a connection that fails is tried again, three times: a push or a fetch can be repeated
-  local i o; for i in 1 2 3; do o=$(git_as "$@" 2>&1) && { [ -z "$o" ] || printf '%s\n' "$o" >&2; return 0; }
-    grep -qiE 'unable to access|could not resolve|timed out|connection (reset|refused)|early eof|rpc failed' <<<"$o" || break; sleep 3; done
+  local i o; for i in 1 2 3; do o=$(git_as "$1" -c http.lowSpeedLimit=1 -c http.lowSpeedTime=20 "${@:2}" 2>&1) && { [ -z "$o" ] || printf '%s\n' "$o" >&2; return 0; }
+    grep -qiE 'unable to access|could not resolve|timed out|connection (reset|refused)|early eof|rpc failed|remote rejected|internal error|http 50[0-9]|low speed' <<<"$o" || break; sleep 3; done
   printf '%s\n' "$o" >&2; return 1; }
 
 role=${1:-}; verb=${2:-}; [ $# -ge 2 ] || die "usage: forge dev|review|operator VERB ..."; shift 2

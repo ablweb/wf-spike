@@ -7,7 +7,7 @@
   "app": "ablweb/wf-spike",
   "tasks": "ablweb/wf-spike-tasks",
   "ci": {
-    "image": "docker.io/library/python:3.12",
+    "image": "docker.io/alpine/git:latest",
     "full": "test ! -e docs/red.flag",
     "fast": "true",
     "model": "python3 .claude/hooks/model.py"

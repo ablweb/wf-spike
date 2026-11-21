@@ -23,6 +23,7 @@
 # default forgejo: host-forgejo.sh next to this file), which says what each verb answers.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[ -z "${WF_FORGE_LOG:-}" ] || exec 2> >(tee -a "$WF_FORGE_LOG" >&2)   # for the checks: what the tool said on stderr is kept in that file (the hook shows only that a verb failed)
 
 APP=${FORGE_APP:-$(wfcfg .app)} TASKS=${FORGE_TASKS:-$(wfcfg .tasks)} WORK=${FORGE_WORK:-$STATE/work}
 die() { say "forge: $*"; exit 2; }
@@ -79,3 +80,4 @@ case $role/$verb in
   operator/git) git_as "$U" "$@";;
   *) fn=h_${role}_${verb//-/_}; declare -F "$fn" >/dev/null || die "no verb '$verb' for role $role"; "$fn" "$@";;
 esac
+rc=$?; [ -z "${WF_FORGE_LOG:-}" ] || echo "forge $role $verb: $SECONDS s, exit $rc" >&2; exit $rc

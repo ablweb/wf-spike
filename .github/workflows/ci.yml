@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     container:
-      image: docker.io/library/python:3.12
+      image: docker.io/alpine/git:latest
     steps:
       # checkout from GitHub itself, with the job's token: no action to download, so no node in the image (git must be in it). The workspace
       # belongs to another user than the container's, so git is told to trust it. (a workspace that already holds the files is used as it is)

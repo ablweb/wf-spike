@@ -20,7 +20,7 @@ gh_token() { # ROLE: the token to use, minted when the kept one ends in less tha
   [ "$r" != operator ] || { cat "$GH/operator.token" 2>/dev/null || die "no operator token ($GH/operator.token)"; return; }
   if [ -f "$f" ] && read -r exp <"$f" && [ "$exp" -gt $(( $(date +%s) + 120 )) ]; then sed -n 2p "$f"; return; fi
   . "$GH/$r.app" 2>/dev/null || die "no credentials for the $r App ($GH/$r.app)"
-  resp=$(curl -4 -sS --max-time 30 -X POST -K <(printf 'header = "Authorization: Bearer %s"\n' "$(jwt "$APP_ID" "$GH/$r.pem")") \
+  resp=$(curl -4 -sS --connect-timeout 8 --max-time 30 -X POST -K <(printf 'header = "Authorization: Bearer %s"\n' "$(jwt "$APP_ID" "$GH/$r.pem")") \
     -H 'Accept: application/vnd.github+json' "$GH_API/app/installations/$INST_ID/access_tokens") || die "cannot reach GitHub"
   [ -n "$(jq -r '.token // empty' <<<"$resp")" ] || die "the $r App got no installation token: $(jq -r '.message // empty' <<<"$resp")"
   tmp=$(mktemp "$GH/.tok.XXXXXX") && { date -d "$(jq -r .expires_at <<<"$resp")" +%s; jq -r .token <<<"$resp"; } >"$tmp" && mv "$tmp" "$f"; jq -r .token <<<"$resp"; }
@@ -31,41 +31,54 @@ host_init() { # forge calls it once the role is known: the header of git over ht
 # networks time out on IPv6, and a GET is tried three times)
 api_raw() {
   local user=$1 method=$2 path=$3 data=${4:-} tok a n=1 c=000; tok=$(gh_token "$(gh_role "$user")") || { echo 000; return; }
-  a=(-4 -sS --max-time 60 -o "$BODY" -w '%{http_code}' -X "$method" -H "Accept: ${GH_ACCEPT:-application/vnd.github+json}" -H 'X-GitHub-Api-Version: 2022-11-28')
+  a=(-4 -sS --connect-timeout 8 --max-time 40 -o "$BODY" -w '%{http_code}' -X "$method" -H "Accept: ${GH_ACCEPT:-application/vnd.github+json}" -H 'X-GitHub-Api-Version: 2022-11-28')
   if [ "$data" = "-" ]; then a+=(-H 'Content-Type: application/json' --data-binary @-); n=1
   elif [ -n "$data" ]; then a+=(-H 'Content-Type: application/json' -d "$data"); fi
   [ "$method" != GET ] || n=3
-  for _ in $(seq $n); do c=$(curl "${a[@]}" -K <(printf 'header = "Authorization: Bearer %s"\n' "$tok") "$GH_API$path" 2>/dev/null) || c=000; [ "$c" != 000 ] && break; done; echo "$c"; }
+  for r in 1 2 3 4; do   # (GitHub answers 403 or 429 "rate limit" when requests come too fast: wait and ask again, up to three times)
+    for _ in $(seq $n); do c=$(curl "${a[@]}" -K <(printf 'header = "Authorization: Bearer %s"\n' "$tok") "$GH_API$path" 2>/dev/null) || c=000; [ "$c" != 000 ] && break; done
+    { [ "$c" = 403 ] || [ "$c" = 429 ]; } && [ "$data" != "-" ] && [ "$r" -lt 4 ] && grep -qi 'rate limit' "$BODY" 2>/dev/null && { say "forge: GitHub rate limit ($method $path): waiting $((r * 20)) s"; sleep $((r * 20)); continue; }
+    break; done; echo "$c"; }
 
 PRJ='{number, state, merged: (.merged // (.merged_at != null)), head_sha: .head.sha, head_ref: .head.ref, title, merged_by: .merged_by.login, merged_at}'
 
-# ---- the check wf/review (see the header)
-rv_state() { # SHA: {id, status, pending, approved, changes} of the latest wf/review check of the commit; nothing when it has none
-  api bot-review GET "/repos/$APP/commits/$1/check-runs?check_name=wf%2Freview&per_page=30" |
-    jq -c '[.check_runs[]] | max_by(.id) // empty | ((.output.summary // "{}") | (fromjson? // {})) as $s |
-      {id, status, pending: ($s.pending // []), approved: ($s.approved // []), changes: ($s.changes // [])}'; }
-rv_write() { # SHA PENDING APPROVED CHANGES (JSON lists): the check of the commit, made or moved on
-  local sha=$1 p=$2 a=$3 c=$4 cur st con= title d id
-  cur=$(rv_state "$sha")
+# ---- the check wf/review (see the header). A read that fails is an error, never "no check": a writer that took it for none would start from nothing and
+# lift the hold. rv_ensure and rv_write leave the head's state in RV_NOW, so that nothing depends on reading back what was just written (the lists of
+# check runs lag behind a write; a reader that still misses it is waited for in rv_write).
+RV_NOW=
+rv_state() { # SHA: {id, status, pending, approved, changes} of the latest wf/review check of the commit; nothing when it has none, failure when GitHub cannot be read
+  local r; r=$(api bot-review GET "/repos/$APP/commits/$1/check-runs?check_name=wf%2Freview&per_page=30") || return 1
+  jq -c '[.check_runs[]] | max_by(.id) // empty | ((.output.summary // "{}") | (fromjson? // {})) as $s |
+    {id, status, pending: ($s.pending // []), approved: ($s.approved // []), changes: ($s.changes // [])}' <<<"$r"; }
+rv_write() { # SHA PENDING APPROVED CHANGES CURRENT: the check of the commit, made or moved on (CURRENT is its state now, empty when it has none)
+  local sha=$1 p=$2 a=$3 c=$4 cur=${5:-} st con= title d r id
   if [ "$(jq length <<<"$c")" -gt 0 ]; then st=completed con=failure title="changes requested"
   elif [ "$(jq length <<<"$p")" -gt 0 ]; then st=in_progress title="waiting for: $(jq -r 'join(", ")' <<<"$p")"
   else st=completed con=success title="no review pending"; fi
   d=$(jq -nc --arg t "$title" --arg s "$(jq -nc --argjson p "$p" --argjson a "$a" --argjson c "$c" '{pending: $p, approved: $a, changes: $c}')" --arg st "$st" --arg con "$con" \
     '{status: $st, output: {title: $t, summary: $s}} + (if $con != "" then {conclusion: $con} else {} end)')
   id=$(jq -r '.id // empty' <<<"$cur")
-  if [ -n "$id" ] && [ "$(jq -r .status <<<"$cur")" != completed ]; then api bot-review PATCH "/repos/$APP/check-runs/$id" "$d" >/dev/null
-  else api bot-review POST "/repos/$APP/check-runs" "$(jq -c --arg n wf/review --arg h "$sha" '. + {name: $n, head_sha: $h}' <<<"$d")" >/dev/null; fi; }
-rv_ensure() { # PR: the head has its check; a new head (a push, an update of the branch) takes the pending reviews of the commit before
-  local head cur sha p='[]'; head=$(head_of "$1") || exit 1; [ -z "$(rv_state "$head")" ] || return 0
+  if [ -n "$id" ] && [ "$(jq -r .status <<<"$cur")" != completed ]; then r=$(api bot-review PATCH "/repos/$APP/check-runs/$id" "$d") || return 1
+  else r=$(api bot-review POST "/repos/$APP/check-runs" "$(jq -c --arg n wf/review --arg h "$sha" '. + {name: $n, head_sha: $h}' <<<"$d")") || return 1; fi
+  RV_NOW=$(jq -nc --argjson i "$(jq .id <<<"$r")" --arg st "$st" --argjson p "$p" --argjson a "$a" --argjson c "$c" '{id: $i, status: $st, pending: $p, approved: $a, changes: $c}')
+  for _ in $(seq 40); do [ "$(rv_state "$sha" | jq -c '[.pending, .approved, .changes]')" = "[$p,$a,$c]" ] && return 0; sleep 1.5; done
+  say "forge: the review check of ${sha:0:7} was written but is not readable yet (a minute); going on with what was written"; return 0; }
+rv_peek() { # PR: RV_HEAD is the head, RV_NOW its check, or the state a check would start with (no id) when it has none: the pending reviews of the commit before
+  local cur sha p='[]'; RV_HEAD=$(head_of "$1") || exit 1; cur=$(rv_state "$RV_HEAD") || exit 1
+  [ -z "$cur" ] || { RV_NOW=$cur; return 0; }
   for sha in $(api "$U" GET "/repos/$APP/pulls/$1/commits?per_page=100" | jq -r '[.[].sha] | reverse | .[]' | head -12); do
-    [ "$sha" != "$head" ] || continue; cur=$(rv_state "$sha"); [ -n "$cur" ] || continue
+    [ "$sha" != "$RV_HEAD" ] || continue; cur=$(rv_state "$sha") || exit 1; [ -n "$cur" ] || continue
     [ "$(jq '.changes | length' <<<"$cur")" != 0 ] || p=$(jq -c .pending <<<"$cur"); break; done
-  rv_write "$head" "$p" '[]' '[]'; }
-rv_move() { # PR HEAD_SHA WHO KIND: WHO answers (approved | changes) or is asked (pending) or is released (drop) on the head's check
-  local cur; rv_ensure "$1"; cur=$(rv_state "$2"); [ -n "$cur" ] || die "PR #$1 has no review check at ${2:0:7}"
+  RV_NOW=$(jq -nc --argjson p "$p" '{pending: $p, approved: [], changes: []}'); }
+rv_ensure() { # PR: the head has its check (a new head, after a push or an update of the branch, starts one). Never a second one is written for the commit when a
+  # review is about to be asked: two runs of one name made within seconds can tie, and the one that succeeded may count (seen: a held PR merged)
+  rv_peek "$1"; [ -z "$(jq -r '.id // empty' <<<"$RV_NOW")" ] || return 0
+  rv_write "$RV_HEAD" "$(jq -c .pending <<<"$RV_NOW")" '[]' '[]' || exit 1; }
+rv_move() { # PR HEAD_SHA WHO KIND: WHO answers (approved | changes) or is asked (pending) or is released (drop) on the head's check, which is made now when it has none
+  local cur; rv_peek "$1"; cur=$RV_NOW; [ "$2" = "$RV_HEAD" ] || die "PR #$1 moved on: its head is ${RV_HEAD:0:7}, not ${2:0:7}"
   rv_write "$2" "$(jq -c --arg w "$3" --arg k "$4" '(.pending - [$w]) + (if $k == "pending" then [$w] else [] end) | unique' <<<"$cur")" \
     "$(jq -c --arg w "$3" --arg k "$4" '(.approved - [$w]) + (if $k == "approved" then [$w] else [] end) | unique' <<<"$cur")" \
-    "$(jq -c --arg w "$3" --arg k "$4" '(.changes - [$w]) + (if $k == "changes" then [$w] else [] end) | unique' <<<"$cur")"; }
+    "$(jq -c --arg w "$3" --arg k "$4" '(.changes - [$w]) + (if $k == "changes" then [$w] else [] end) | unique' <<<"$cur")" "$cur"; }
 
 pr_of() { # [BRANCH]: number of the open PR of that branch (default: the checked out one), empty if none
   local b=${1:-}; [ -n "$b" ] || b=$(branch) || exit 2; [[ $b =~ ^[A-Za-z0-9._/-]+$ ]] || die "odd branch name"
@@ -86,8 +99,7 @@ ci_log() { local sha run j; num "${1:-}"; sha=$(head_of "$1") || exit 1
   # the jobs that did not pass; the job `ci` of a project with components only totals the others, so it is shown when it is the only one
   for j in $(api "$U" GET "/repos/$APP/actions/runs/$run/jobs?per_page=100" | jq -r '.jobs | (map(select(.conclusion != "success" and .conclusion != "skipped" and .status == "completed")) | (map(select(.name != "ci")) as $c | if ($c | length) > 0 then $c else . end)) | .[] | "\(.id):\(.name)"'); do
     [ "${j#*:}" = ci ] || echo "== job ${j#*:}"
-    [ "$(curl -4 -sSL --max-time 60 -o "$BODY" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$(gh_token "$(gh_role "$U")")") "$GH_API/repos/$APP/actions/jobs/${j%%:*}/logs")" = 200 ] &&
-      sed 's/^[0-9T:.Z-]* //' "$BODY" | tail -n 80; done; }
+    for _ in 1 2 3; do [ "$(curl -4 -sSL --connect-timeout 8 --max-time 40 -o "$BODY" -w '%{http_code}' -K <(printf 'header = "Authorization: Bearer %s"\n' "$(gh_token "$(gh_role "$U")")") "$GH_API/repos/$APP/actions/jobs/${j%%:*}/logs" 2>/dev/null)" = 200 ] && { sed 's/^[0-9T:.Z-]* //' "$BODY" | tail -n 80; break; }; done; done; }   # (the download is tried three times: this network times out now and then)
 verdict() { # EVENT N SHA [-]: the reviewer's answer: the head is checked, the check moves, the comments are kept on the PR
   local ev=$1 who=$2 n=$3 sha=$4 b= cur kind; num "$n"; [[ ${sha:-} =~ ^[0-9a-f]{40}$ ]] || die "give the full head SHA that you reviewed"
   [ "${5:-}" != - ] || b=$(cat)
@@ -135,7 +147,8 @@ h_dev_task_labels() { local code; num "${1:-}"; code=$(api_raw "$U" GET "/repos/
   case $code in 404) ;; 2*) jq -r '.labels[].name' "$BODY";; *) die "task $1 answered $code";; esac; }
 h_dev_review_request() {   # a reviewer that already has a pending request is not asked twice; one that has answered (the head moved) is asked again
   num "${1:-}"; case ${2:-} in bot-review|operator) ;; *) die "the reviewer is bot-review or operator";; esac
-  if [ "$(rv_state "$(head_of "$1")" | jq -r --arg u "$2" '.pending | index($u) // empty')" != "" ]; then echo "review of $2 already requested"
+  rv_peek "$1"
+  if jq -e --arg u "$2" '.pending | index($u) != null' <<<"$RV_NOW" >/dev/null; then echo "review of $2 already requested"
   else rv_move "$1" "$(head_of "$1")" "$2" pending || exit 1; echo "review requested from $2"; fi; }
 h_dev_task_status() {
   local keep; num "${1:-}"; case ${2:-} in todo|in-review) ;; *) die "status must be todo|in-review";; esac

@@ -20,9 +20,10 @@ gh_token() { # ROLE: the token to use, minted when the kept one ends in less tha
   [ "$r" != operator ] || { cat "$GH/operator.token" 2>/dev/null || die "no operator token ($GH/operator.token)"; return; }
   if [ -f "$f" ] && read -r exp <"$f" && [ "$exp" -gt $(( $(date +%s) + 120 )) ]; then sed -n 2p "$f"; return; fi
   . "$GH/$r.app" 2>/dev/null || die "no credentials for the $r App ($GH/$r.app)"
-  resp=$(curl -4 -sS --connect-timeout 3 --max-time 30 -X POST -K <(printf 'header = "Authorization: Bearer %s"\n' "$(jwt "$APP_ID" "$GH/$r.pem")") \
-    -H 'Accept: application/vnd.github+json' "$GH_API/app/installations/$INST_ID/access_tokens") || die "cannot reach GitHub"
-  [ -n "$(jq -r '.token // empty' <<<"$resp")" ] || die "the $r App got no installation token: $(jq -r '.message // empty' <<<"$resp")"
+  for _ in 1 2 3 4 5 6; do   # (a connection to GitHub fails now and then: the token is asked for again)
+    resp=$(curl -4 -sS --connect-timeout 3 --max-time 30 -X POST -K <(printf 'header = "Authorization: Bearer %s"\n' "$(jwt "$APP_ID" "$GH/$r.pem")") \
+      -H 'Accept: application/vnd.github+json' "$GH_API/app/installations/$INST_ID/access_tokens" 2>/dev/null) && [ -n "$(jq -r '.token // empty' <<<"$resp")" ] && break; resp=; sleep 2; done
+  [ -n "$resp" ] || die "the $r App got no installation token from GitHub (the connection failed, or the App id, installation id and key do not match)"
   tmp=$(mktemp "$GH/.tok.XXXXXX") && { date -d "$(jq -r .expires_at <<<"$resp")" +%s; jq -r .token <<<"$resp"; } >"$tmp" && mv "$tmp" "$f"; jq -r .token <<<"$resp"; }
 host_init() { # forge calls it once the role is known: the header of git over https for the role's account
   local t; mkdir -p "$GH" 2>/dev/null; t=$(gh_token "$(gh_role "$U")") || exit 1

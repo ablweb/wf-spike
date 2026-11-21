@@ -27,16 +27,18 @@ gh_token() { # ROLE: the token to use, minted when the kept one ends in less tha
 host_init() { # forge calls it once the role is known: the header of git over https for the role's account
   local t; mkdir -p "$GH" 2>/dev/null; t=$(gh_token "$(gh_role "$U")") || exit 1
   printf 'Authorization: basic %s\n' "$(printf 'x-access-token:%s' "$t" | base64 -w0)" >"$(hdr "$U")"; }
-# api_raw USER METHOD PATH [JSON|-]: as lib.sh's, for the GitHub API (GH_ACCEPT changes the media type; api.github.com is reached over IPv4: some
-# networks time out on IPv6, and a GET is tried three times)
+# api_raw USER METHOD PATH [JSON|-]: as lib.sh's, for the GitHub API. GH_ACCEPT changes the media type. api.github.com is reached over IPv4 (some
+# networks time out on IPv6). A connection that fails is tried again, up to four times: a GET always, any other method only when the connection was never made
+# (nothing was sent), so that a change is not made twice. GitHub answers 403 or 429 "rate limit" when requests come too fast: wait and ask again, up to three times.
 api_raw() {
-  local user=$1 method=$2 path=$3 data=${4:-} tok a n=1 c=000; tok=$(gh_token "$(gh_role "$user")") || { echo 000; return; }
-  a=(-4 -sS --connect-timeout 8 --max-time 40 -o "$BODY" -w '%{http_code}' -X "$method" -H "Accept: ${GH_ACCEPT:-application/vnd.github+json}" -H 'X-GitHub-Api-Version: 2022-11-28')
-  if [ "$data" = "-" ]; then a+=(-H 'Content-Type: application/json' --data-binary @-); n=1
+  local user=$1 method=$2 path=$3 data=${4:-} tok a w c tc r i; tok=$(gh_token "$(gh_role "$user")") || { echo 000; return; }
+  a=(-4 -sS --connect-timeout 8 --max-time 30 -o "$BODY" -w '%{http_code} %{time_connect}' -X "$method" -H "Accept: ${GH_ACCEPT:-application/vnd.github+json}" -H 'X-GitHub-Api-Version: 2022-11-28')
+  if [ "$data" = "-" ]; then a+=(-H 'Content-Type: application/json' --data-binary @-)
   elif [ -n "$data" ]; then a+=(-H 'Content-Type: application/json' -d "$data"); fi
-  [ "$method" != GET ] || n=3
-  for r in 1 2 3 4; do   # (GitHub answers 403 or 429 "rate limit" when requests come too fast: wait and ask again, up to three times)
-    for _ in $(seq $n); do c=$(curl "${a[@]}" -K <(printf 'header = "Authorization: Bearer %s"\n' "$tok") "$GH_API$path" 2>/dev/null) || c=000; [ "$c" != 000 ] && break; done
+  for r in 1 2 3 4; do
+    for i in 1 2 3 4; do
+      w=$(curl "${a[@]}" -K <(printf 'header = "Authorization: Bearer %s"\n' "$tok") "$GH_API$path" 2>/dev/null) || true; c=${w%% *}; tc=${w##* }; [ -n "$c" ] || c=000
+      [ "$c" = 000 ] || break; [ "$data" != "-" ] || break; [ "$method" = GET ] || [ "${tc:-1}" = 0.000000 ] || break; sleep 2; done
     { [ "$c" = 403 ] || [ "$c" = 429 ]; } && [ "$data" != "-" ] && [ "$r" -lt 4 ] && grep -qi 'rate limit' "$BODY" 2>/dev/null && { say "forge: GitHub rate limit ($method $path): waiting $((r * 20)) s"; sleep $((r * 20)); continue; }
     break; done; echo "$c"; }
 

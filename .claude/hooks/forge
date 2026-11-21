@@ -28,6 +28,10 @@ set -uo pipefail
 APP=${FORGE_APP:-$(wfcfg .app)} TASKS=${FORGE_TASKS:-$(wfcfg .tasks)} WORK=${FORGE_WORK:-$STATE/work}
 die() { say "forge: $*"; exit 2; }
 num() { [[ ${1:-} =~ ^[0-9]+$ ]] || die "not a number: ${1:-}"; }
+gitr() { # USER GIT-ARGS: git_as for a command whose output is not used (fetch, push); a connection that fails is tried again, three times: a push or a fetch can be repeated
+  local i o; for i in 1 2 3; do o=$(git_as "$@" 2>&1) && { [ -z "$o" ] || printf '%s\n' "$o" >&2; return 0; }
+    grep -qiE 'unable to access|could not resolve|timed out|connection (reset|refused)|early eof|rpc failed' <<<"$o" || break; sleep 3; done
+  printf '%s\n' "$o" >&2; return 1; }
 
 role=${1:-}; verb=${2:-}; [ $# -ge 2 ] || die "usage: forge dev|review|operator VERB ..."; shift 2
 case $role in dev) U=bot-dev;; review) U=bot-review;; operator) U=operator;; *) die "unknown role: $role";; esac
@@ -49,17 +53,17 @@ case $role/$verb in
     # push from a clean bare repo, so nothing in the agent's own .git/config (url rewrites, hooks, proxies) sees the token
     t=$(mktemp -d "$STATE/push.XXXXXX"); trap 'rm -f "$BODY"; rm -rf "$t"' EXIT
     git init -q --bare "$t" && git -C "$t" fetch -q "$PWD" "+HEAD:refs/heads/$b" || die "cannot read the current branch"
-    git_as "$U" -C "$t" fetch -q "$BASE/$APP.git" main:refs/heads/_main || die "cannot read main"
+    gitr "$U" -C "$t" fetch -q "$BASE/$APP.git" main:refs/heads/_main || die "cannot read main"
     if [ -n "$force" ]; then   # lease on the value the forge has right now
       rb=$(git_as "$U" -C "$t" ls-remote "$BASE/$APP.git" "refs/heads/$b" | cut -f1); force=${rb:+--force-with-lease=refs/heads/$b:$rb}
     fi
     c=$(git -C "$t" diff --no-renames --name-only "_main...$b" | python3 "$WF_LIB/paths.py" classify | sed -n 's/^C //p')
     [ -z "$c" ] || die "class C files are changed by the operator or the human, not by agents; remove from this branch: $(tr '\n' ' ' <<<"$c")"
-    git_as "$U" -C "$t" push -q $force "$BASE/$APP.git" "refs/heads/$b:refs/heads/$b" && say "pushed $b";;
+    gitr "$U" -C "$t" push -q $force "$BASE/$APP.git" "refs/heads/$b:refs/heads/$b" && say "pushed $b";;
   dev/sync)   # the token only touches a clean bare repo; the checkout gets main through a local fetch
     clone >/dev/null || exit 2; b=$(branch) || exit 2
     t=$(mktemp -d "$STATE/sync.XXXXXX"); trap 'rm -f "$BODY"; rm -rf "$t"' EXIT
-    git init -q --bare "$t" && git_as "$U" -C "$t" fetch -q "$BASE/$APP.git" main:refs/heads/main || die "cannot read main"
+    git init -q --bare "$t" && gitr "$U" -C "$t" fetch -q "$BASE/$APP.git" main:refs/heads/main || die "cannot read main"
     ok=; for _ in 1 2 3; do git fetch -q "$t" +refs/heads/main:refs/wf/main 2>/dev/null && { ok=1; break; }; sleep 1; done   # parallel syncs share the repository's refs
     [ -n "$ok" ] || die "cannot bring main into the checkout"
     if git merge-base --is-ancestor refs/wf/main HEAD; then echo "up to date with main"
@@ -70,7 +74,7 @@ case $role/$verb in
     # subagent's worktree from origin/main and was seen not to fetch it first, so a task that needs a merged one started on stale code
     c=$(git rev-parse --show-toplevel 2>/dev/null) && [ "$(realpath -e -- "$c")" = "$(realpath -m -- "$WORK")" ] || die "run it in the project checkout (FORGE_WORK)"
     t=$(mktemp -d "$STATE/fetch.XXXXXX"); trap 'rm -f "$BODY"; rm -rf "$t"' EXIT
-    git init -q --bare "$t" && git_as "$U" -C "$t" fetch -q "$BASE/$APP.git" main:refs/heads/main || die "cannot read main"
+    git init -q --bare "$t" && gitr "$U" -C "$t" fetch -q "$BASE/$APP.git" main:refs/heads/main || die "cannot read main"
     git -C "$c" fetch -q "$t" +refs/heads/main:refs/remotes/origin/main || die "cannot bring main into the checkout"
     if [ "$(git -C "$c" symbolic-ref --short HEAD 2>/dev/null)" = main ] && [ -z "$(git -C "$c" status --porcelain --untracked-files=no)" ]; then
       git -C "$c" merge -q --ff-only refs/remotes/origin/main >/dev/null 2>&1 || true
